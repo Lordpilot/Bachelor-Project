@@ -1,0 +1,170 @@
+---
+title: "Clean"
+output: html_document
+---
+
+Set the work directory according to where the folder is on your computer.
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, root.dir = 'D:/Google Drive/MatOk/P6 (Bachelor)/P6Kode')
+```
+
+```{r}
+library(readxl)
+library(readr)
+library(tidyverse) 
+library(plyr)
+library(data.table)
+library(zoo)
+```
+
+Start by importing data. (Put the price and consumption into 2 different folders, input those locations of the data in line 24 and 35)
+```{r, echo=FALSE}
+my_read_excel <- function(x) {read_xlsx(path = x, range = "A3:D368", na = "")}
+my_read_excel2 <- function(x) {read_xlsx(path = x, range = "A3:D143", na = "")}
+setwd("D:/Google Drive/MatOk/R/P6Kode/Data/Daily/Consumption")
+getwd()
+consum_files <- list.files();consum_files
+con_data <- my_read_excel(consum_files[1])
+con_data <- rbind(con_data, read_xlsx(path = consum_files[2], range = "A3:D369", na = "")) #Add additional day for leap year
+con_data <- rbind(con_data, ldply(consum_files[3:5], my_read_excel))
+con_data <- rbind(con_data, ldply(consum_files[6], my_read_excel2))
+
+
+my_read_excel <- function(x) {read_xlsx(path = x, range = "A3:I368", na = "")}
+my_read_excel2 <- function(x) {read_xlsx(path = x, range = "A3:I143", na = "")}
+setwd("D:/Google Drive/MatOk/R/P6Kode/Data/Daily/Prices")
+getwd()
+price_files <- list.files();price_files
+price_data <- my_read_excel(price_files[1])
+price_data <- rbind(price_data, read_xlsx(path = price_files[2], range = "A3:I369", na = "")) #Add additional day for leap year
+price_data <- rbind(price_data, ldply(price_files[3:5], my_read_excel))
+price_data <- rbind(price_data, ldply(price_files[6], my_read_excel2))
+price_data <- price_data[,c(1,8,9)]
+
+#tmp1 <- as.numeric(sub(",",".", as.matrix(price_data[,3:4])[,1]))
+#tmp2 <- as.numeric(sub(",",".", as.matrix(price_data[,3:4])[,2]))
+#price_data[,3:4] <- cbind(tmp1,tmp2)
+```
+
+Fix several observations for the same point in time.
+```{r}
+tmp_con_data <- as.data.table(con_data)
+tmp_price_data <- as.data.table(price_data)
+keys <- c("...1")
+
+#Clean Consumption
+keys <- c("...1")
+tmp_con_data <- tmp_con_data[,list(DK1 = mean(DK1), DK2 = mean(DK2), DK = mean(DK)), keys]
+
+#Clean Price
+keys <- c("...1")
+tmp_price_data <- tmp_price_data[,list(DK1 = mean(DK1), DK2 = mean(DK2)), keys]
+```
+
+
+Interpolation by linear approximation
+```{r}
+#Consumption
+DK1 <- na.approx(tmp_con_data[,2])
+DK2 <- na.approx(tmp_con_data[,3])
+DK <- na.approx(tmp_con_data[,4])
+tmp_con_data <- cbind(tmp_con_data[,1],DK1,DK2,DK)
+
+#Price
+DK1 <- na.approx(tmp_price_data[,2])
+DK2 <- na.approx(tmp_price_data[,3])
+tmp_price_data <- cbind(tmp_price_data[,1],DK1,DK2)
+```
+
+
+Fix time/date column (Make it a better format)
+```{r}
+clean_con_data <- as_tibble(tmp_con_data)
+clean_price_data <- as_tibble(tmp_price_data)
+
+time_vector <- seq(ISOdate(2015,1,1,13), ISOdate(2019,12,31,13), "days")
+
+clean_price_data <- cbind(time_vector ,clean_price_data[,2:3])
+colnames(clean_price_data)[1] <- "Time"
+
+clean_con_data <- cbind(time_vector ,clean_con_data[,2:4])
+colnames(clean_con_data)[1] <- "Time"
+```
+
+
+Final touch
+```{r}
+clean_price_data <- cbind(clean_price_data[,1:3], (clean_price_data[,2]+clean_price_data[,3])/2)
+colnames(clean_price_data)[4] <- "DK"
+
+View(clean_con_data);View(clean_price_data)
+
+all_data <- list(clean_price_data, clean_con_data)
+names(all_data) <- c("Price","Consumption")
+
+tc <- seq(1, length(clean_con_data$DK1))
+plot(clean_con_data$Time, clean_con_data$DK1, xlab = "Time", ylab = "Consumption", type ="l")
+```
+
+Gem det ffrdige data
+```{r}
+rm(list=setdiff(ls(), c("all_data", "clean_con_data", "clean_price_data")))
+```
+
+
+
+
+
+
+
+
+Experimental Section (Trash can)
+```{r}
+dup_fiks <- function( DATA, r1 = c(1:2), r2 = m_rows )
+{
+  dups <- which(duplicated(DATA[,r1]) == TRUE)
+  n <- length(dups)
+  mean_val <- matrix(rep(0,n*length(m_rows)), nrow = n)
+  print(mean_val)
+  new_DATA <- DATA
+  for (i in 1:n) {
+    mean_val[i,] <- as.numeric((DATA[dups[i], m_rows] + DATA[dups[i]-1, m_rows])/2)
+    print(mean_val[i,])
+    new_DATA[dups[i]-1,m_rows] <- mean_val[i,]
+  }
+  new_DATA <- new_DATA[-dups]
+}
+m_rows <- c(3:5)
+dup_fiks(con_data)
+```
+
+
+Cleanup
+```{r}
+which(duplicated(price_data[,1:2]) == TRUE)
+#Fiks duplikater (Virker for 2 observationer op ad hinanden)
+clean_con_data <- con_data %>% group_by(...1,Hours) %>% summarise_all(funs(mean))
+
+
+clean_price_data <- price_data %>% group_by(...1,Hours) %>% summarise_all(funs(mean))
+
+
+
+```
+
+test2
+```{r}
+library(data.table)
+dat <- read.table(text='name    value   etc1    etc2
+A       9       1       X
+A       10      1       X
+A       11      1       X
+B       2       1       Y
+C       40      1       Y
+C       50      1       Y',header=TRUE)
+keys <- colnames(dat)[!grepl('value',colnames(dat))]
+X <- as.data.table(dat)
+X[,list(mm= mean(value)),keys]
+X[,list(mm= mean(value)),keys]
+```
+

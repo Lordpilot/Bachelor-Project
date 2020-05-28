@@ -1,0 +1,155 @@
+---
+title: "AnalysePris"
+author: "Jens Kramer Rold Jensen"
+date: "2020 M05 14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(chron)
+library(forecast)
+library(astsa)
+```
+
+Load functions and data.
+```{r}
+getwd()
+setwd("D:/Google Drive/MatOk/R/P6Kode")
+source("Kode/Funktioner.R")
+load("Data/Daily/Clean/all_data.RData")
+```
+
+Plot
+```{r}
+time <- clean_con_data[,1]
+t <- seq(1,length(time),1)
+P.start <- clean_price_data[,3]
+C.start <- clean_con_data[,3]
+wknd_days <- which(is.weekend(time))
+wknd <- rep(0,length(time))
+wknd[wknd_days] <- 1
+
+#par(mfrow = c(2,1))
+plot(time, P.start, type = "l", main = "Price over time")
+#plot(t, P, type = "p")
+```
+
+Remove Deterministic Component
+```{r}
+#Season
+freq <- c(365.2, 365.2/2, 6.996169)
+#Get seasonal part of design matrix
+seasons <- Fourier(P.start, freq)
+#Create Dummy variable for design matrix
+wknd_days <- which(is.weekend(time))
+wknd <- rep(0,length(time))
+wknd[wknd_days] <- 1
+#Create Factor Matrix
+factors <- cbind(seq(1:length(P.start)),seasons$factors, wknd)
+P_model <- lm(P.start ~ factors)
+sP <- P_model$residuals
+DC_p <- P.start - sP
+plot(time, P.start, type = "l")
+lines(time, DC_p, type = "l", col = "red")
+
+#Plot ACF
+acf2(sP, max.lag = 500)
+```
+
+Find best model
+```{r}
+##Don't run unles you want to find the best model, takes several hours.
+#bestSARMA_Price <- best.SARMA(sP, max.order = 6, season = 7) # c(3, 0, 1, 0, 0, 5, 7)
+```
+
+Estimate model
+```{r}
+###Price SARIMA
+sarima_P <- sarima(sP, 2, 0, 1, 0, 0, 3, 7, no.constant = TRUE) # c(4,0,1,0,0,3,7)
+sarima_P$ttable
+sarima_P_residuals <- sarima_P$fit$residuals
+plot(time, sarima_P_residuals, type = "l")
+acf2(sarima_P_residuals, max.lag = 500)
+qqnorm(sarima_P_residuals)
+qqline(sarima_P_residuals, col = "steelblue", lwd = 2)
+
+##Isolate the ARMA
+#Get coefficients
+P_coefs<- sarima_P$fit$coef
+print(P_coefs)
+#Save the coefficients in vectors
+P_coefs_ar <- P_coefs[1:2]
+P_coefs_ma <- P_coefs[3]
+P_coefs_sma <- P_coefs[4:6]
+
+
+#X = sP, we need to calculate the seasonal difference through diff(sP, 7)
+#Next we calculate the lag polynomial \Phi
+#and finally we find the inverse \Theta and multiply such that we get
+#\Theta^{-1}\PhiXt which follow and ARMA model.
+
+#P_coefs_saeson_Phi <- c(1,rep(0,6),0) #No SAR components
+P_mellemregning <- sP
+
+#Find inverse Theta
+P_coefs_saeson_Theta <- c(1,rep(0,6),P_coefs_sma)
+#Resultat
+P_armadata <- polyinvers(P_mellemregning, P_coefs_saeson_Theta)
+P_armadata_0 <- P_armadata
+P_armadata_0[is.na(P_armadata_0)] <- 0
+
+#Check
+plot(time, P_armadata_0, type = "l")
+acf2(P_armadata, max.lag = 500)
+test <- auto.arima(P_armadata)
+acf2(test$residuals, max.lag = 500) #It looks good
+
+##Remove 105 season
+#wow_C <- sarima(test$residuals,0,0,0,3,0,0,105, no.constant = TRUE)
+```
+
+#Additional deterministic components (For forecasting)
+```{r}
+#Add to the weekend dummy variable
+wknd_add_100 <- c(wknd, c(0,0,0,1,1), rep(c(0,0,0,0,0,1,1), 20))
+wknd2 <- wknd_add_100[1:1926]
+#DC function for consumption
+DC_tp <- function(t) {
+  res <- 181.92252334 + 0.09534617*t + 7.06592817*cos(2*pi*t/365.2) -14.53941430*sin(2*pi*t/365.2) -1.36744108 * cos(2*pi*(2*t)/365.2) + 8.02138643 * sin(2*pi*(2*t)/365.2) + 2.49582886*cos(2*pi*t/6.996169) + 4.11443479*sin(2*pi*t/6.996169) -44.92244172*wknd2[t]
+}
+#100 extra DC observations
+P_100DC <- DC_tp(seq(1827,1926))
+plot(P_100DC, type= "l")
+```
+
+
+Finish
+```{r}
+P_Theta <- P_coefs_saeson_Theta
+P.decomp <- cbind(P.start, DC_p, sP, P_armadata, P_Theta, P_100DC)
+
+##To come back to original X_t
+mellemregning <- polymult(P_armadata, P_coefs_saeson_Theta, 1)
+#Yt <- polyinvers(mellemregning, P_coefs_saeson_Phi) #There are no SAR components
+Yt <- mellemregning #There are no SAR components
+(Yt + DC_p)[500]
+P.start[500]
+```
+
+
+
+
+Save Data
+```{r}
+data.Decomposition <- list(Consumption = C.decomp, Price = P.decomp)
+
+rm(list=setdiff(ls(), c("data.Decomposition")))
+```
+
+
+

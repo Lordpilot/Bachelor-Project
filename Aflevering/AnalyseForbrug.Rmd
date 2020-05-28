@@ -1,0 +1,165 @@
+---
+title: "AnalyseForbrug"
+author: "Jens Kramer Rold Jensen"
+date: "2020 M05 14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(chron)
+library(forecast)
+library(astsa)
+```
+
+Load functions and data.
+```{r}
+getwd()
+setwd("D:/Google Drive/MatOk/R/P6Kode")
+source("Kode/Funktioner.R")
+load("Data/Daily/Clean/all_data.RData")
+```
+
+Plot
+```{r}
+time <- clean_con_data[,1]
+t <- seq(1,length(time),1)
+P.start <- clean_price_data[,3]
+C.start <- clean_con_data[,3]
+wknd_days <- which(is.weekend(time))
+wknd <- rep(0,length(time))
+wknd[wknd_days] <- 1
+
+#par(mfrow = c(2,1))
+plot(time, C.start, type = "l", main = "Price over time")
+#plot(t, P, type = "p")
+```
+
+Christmas dummy (Don't run unless you want to see the results)
+```{r}
+chr_dummy <- c(1,1,1)
+chr_dummy <- c(chr_dummy, rep(0,351))
+chr_dummy <- c(chr_dummy, rep(1,14))
+chr_dummy <- c(chr_dummy, rep(0,352))
+chr_dummy <- c(chr_dummy, rep(1,14))
+chr_dummy <- c(chr_dummy, rep(0,351))
+chr_dummy <- c(chr_dummy, rep(1,14))
+chr_dummy <- c(chr_dummy, rep(0,351))
+chr_dummy <- c(chr_dummy, rep(1,14))
+chr_dummy <- c(chr_dummy, rep(0,351))
+chr_dummy <- c(chr_dummy, rep(1,14))
+chr_dummy <- head(chr_dummy, -3)
+```
+
+Remove Deterministic Component
+```{r}
+#Season
+freq <- c(365.2, 6.996169)
+#Get seasonal part of design matrix
+seasons <- Fourier(C.start, freq)
+#Create Factor Matrix
+factors <- cbind(seq(1:length(C.start)),seasons$factors, wknd) #Add, chr_dummy, if you want to see the results.
+C_model <- lm(C.start ~ factors)
+sC <- C_model$residuals
+DC_c <- C_model$fitted.values
+plot(time, C.start, type = "l")
+lines(time, DC_c, type = "l", col = "red")
+
+#Plot ACF
+acf2(sC, max.lag = 500, main = "ACF")
+```
+
+Find best model
+```{r}
+##Don't run unles you want to find the best model, takes several hours.
+#bestSARMA_Consumption <- best.SARMA(sC, max.order = 6, season = 7) # c(1, 0, 2, 0, 1, 1, 7)
+```
+
+Estim??r model
+```{r}
+##Consumption
+sarima_C <- sarima(sC, 1, 0, 2, 1, 0, 1, 7, no.constant = TRUE) #c(3, 0, 1, 1, 0, 1, 7), c(4, 0, 1, 1, 0, 1, 7)
+sarima_C$ttable
+sarima_C_residuals <- sarima_C$fit$residuals
+plot(time, sarima_C_residuals, type = "l")
+acf2(sarima_C_residuals, max.lag = 500)
+qqnorm(sarima_C_residuals)
+qqline(sarima_C_residuals, col = "steelblue", lwd = 2)
+
+##Isolate the ARMA
+#Get coefficients
+C_coefs <- sarima_C$fit$coef
+print(C_coefs)
+#Save the coefficients in vectors
+C_coefs_ar <- C_coefs[1]
+C_coefs_ma <- C_coefs[2:3]
+C_coefs_sar <- C_coefs[4]
+C_coefs_sma <- C_coefs[5]
+
+
+#X = sC, start by calculating the lag polynomial \Phi
+#and finally we find the inverse \Theta and multiply such that we get
+#\Theta^{-1}*\Phi*Xt which follow and ARMA model.
+
+C_coefs_saeson_Phi <- c(1,rep(0,6), -C_coefs_sar) 
+C_mellemregning <- polymult(sC, C_coefs_saeson_Phi, 1) 
+
+##Find inverse Theta (There are no SMA components)
+C_coefs_saeson_Theta <- c(1,rep(0,6),C_coefs_sma)
+#Resultat
+C_armadata <- polyinvers(C_mellemregning, C_coefs_saeson_Theta)
+C_armadata_0 <- C_armadata
+C_armadata_0[is.na(C_armadata_0)] <- 0
+
+#Check
+plot(time, C_armadata_0, type = "l")
+acf2(C_armadata, max.lag = 500)
+test <- auto.arima(C_armadata)
+acf2(test$residuals, max.lag = 500) #It looks good
+
+##Remove 105 season
+wow_C <- sarima(test$residuals,0,0,0,3,0,0,105, no.constant = TRUE)
+```
+
+
+#Additional deterministic components (For forecasting)
+```{r}
+#Add to the weekend dummy variable
+wknd_add_100 <- c(wknd, c(0,0,0,1,1), rep(c(0,0,0,0,0,1,1), 20))
+wknd2 <- wknd_add_100[1:1926]
+#DC function for consumption
+DC_tc <- function(t) {
+  res <- 36658.9626383 + 0.2177046*t + 4609.2158*cos(2*pi*t/365.2) + 970.7527235*sin(2*pi*t/365.2) + 475.7651720 * cos(2*pi*t/6.996169) + 156.8242892 * sin(2*pi*t/6.996169) -3153.6726925*wknd2[t]
+}
+#100 extra DC observations
+C_100DC <- DC_tc(seq(1827,1926))
+```
+
+Finish
+```{r}
+C_Phi <- C_coefs_saeson_Phi
+C.decomp <- cbind(C.start, DC_c, sC, C_armadata, C_Phi, C_100DC)
+
+##To come back to original X_t
+#mellemregning <- polymult(C_armadata, C_coefs_saeson_Theta, 1) #There are no SMA components
+Yt <- polyinvers(C_armadata, C_coefs_saeson_Phi) 
+#Yt <- mellemregning #There are no SAR components
+(Yt + DC_c)[500]
+C.start[500]
+```
+
+
+Save Data
+```{r}
+data.Decomposition <- list(Consumption = C.decomp, Price = P.decomp)
+
+rm(list=setdiff(ls(), c("data.Decomposition")))
+```
+
+
+
+

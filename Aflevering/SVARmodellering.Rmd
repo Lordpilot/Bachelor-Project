@@ -1,0 +1,343 @@
+---
+title: "SVARmodellering"
+author: "Jens Kramer Rold Jensen"
+date: "2020 M05 15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r}
+library(vars)
+library(svars)
+library(aTSA)
+library(graphics)
+library(dse)
+library(astsa)
+library(corrplot)
+```
+
+
+Load functions and data.
+```{r}
+getwd()
+setwd("D:/Google Drive/MatOk/R/P6Kode")#Jens pc
+#setwd("C:/Users/laust/Desktop/P6Kode")#Laust pc
+source("Kode/Funktioner.R")
+load("Data/Daily/StationaryTS/stationaryTS(Final3).RData")
+load("Data/Daily/Clean/all_data(2020).RData")
+```
+
+Define data
+```{r}
+C <- data.Decomposition$Consumption[,4]; C <- C[-c(1:100)]
+P <- data.Decomposition$Price[,4]; P <- P[-c(1:100)]
+dataM <- cbind(C,P)
+```
+
+Test for stationarity (Augmented Dickey Fuller)
+```{r}
+a <- adf.test(C, nlag = 50, output = FALSE)
+which(a$type1[,3] >= 0.05) #Which p-values are above 0.05? (large p-value = non-stationary)
+b <- adf.test(P, nlag = 50, output = FALSE)
+which(b$type1[,3] >= 0.05) #Which p-values are above 0.05? (large p-value = non-stationary)
+```
+
+VAR model
+```{r}
+info <- VARselect(dataM, lag.max = 50) #Best VAR model based on information criteria
+best.f <- function(x) {
+  which(x == min(x))
+}
+apply(info$criteria, 1, best.f) #BIC/SC says a model with 4 is best.
+VAR.model <- VAR(dataM, p = 9) #Estimates the model using OLS on the companion form.
+#VAR.model <- restrict(VAR.model, method = "ser")
+sum_VAR <- summary(VAR.model)
+summary(VAR.model$varresult$C)$coefficients
+```
+
+Plot residuals and the ACF
+```{r}
+time <- all_data$Price$Time[-c(1:249)]
+#Consumption
+plot(time, VAR.model$varresult$C$residuals, type = "l")
+acf2(VAR.model$varresult$C$residuals, max.lag = 500)
+
+#Price
+plot(time, VAR.model$varresult$P$residuals, type = "l")
+acf2(VAR.model$varresult$P$residuals, max.lag = 500)
+```
+
+Summary of VAR variables
+```{r}
+VAR_Consumption_summary <- summary(VAR.model$varresult$C)
+VAR_Price_summary <- summary(VAR.model$varresult$P)
+
+```
+
+
+Identification of the contemporal parameter on the error term by cholesky decomposition (B)
+```{r}
+C_residuals <- VAR.model$varresult$C$residuals
+P_residuals <- VAR.model$varresult$P$residuals
+covM_residuals <- cov(cbind(C_residuals, P_residuals))
+corM_residuals <- cor(cbind(C_residuals, P_residuals))
+Bman <- t(chol(covM_residuals))
+Bman <- cbind(Bman[,1]/Bman[1,1],Bman[,2]/Bman[2,2])
+Bman
+```
+
+SVAR model (B)
+```{r}
+bmat <- diag(2)
+bmat[2,1] <- NA
+SVARB.model <- SVAR(VAR.model, estmethod = "direct", Bmat = bmat, max.iter = 1000) #Uses ML-estimation 
+```
+
+IRF's for the SVAR B-model
+```{r}
+SVMA_coef <- Phi(SVARB.model)
+m <- dim(SVMA_coef)[3]
+Theta <- vector(mode = "list", m)
+for (i in 1:m) {
+  Theta[[i]] <- SVMA_coef[,,i]
+}
+```
+
+Tests 
+```{r}
+A <- SVARB.model$A
+B <- SVARB.model$B
+inv_QR(SVARB.model$B) %*% c(C_residuals[1], P_residuals[1])
+inv_QR(A) %*% B 
+A %*% B%*% t(B) %*% t(A) #It almost gives the cov matrix of the residuals of the VAR model
+```
+
+IRA (Impulse Response Analysis)
+```{r}
+####SVAR
+###Make the IRF
+irf_SVARB <- irf(SVARB.model, runs = 100)
+irf_SVARB <- irf(SVARB.model, runs = 100, ortho = TRUE)
+
+
+layout(matrix(c(1,2,3,4),2,2,  byrow = TRUE))
+###Consumption Impulse/Price Response
+##Consumption
+#IRF and confidence interval assimilation
+conf_upper <- irf_SVARB$Upper$C[,1]
+conf_lower <- irf_SVARB$Lower$C[,1]
+m <- length(irf_SVARB$Lower$C[,1])
+
+
+#Plot
+#text("Test")
+plot(1:m,irf_SVARB$irf$C[,1], ylim = c(min(conf_lower), max(conf_upper)), type = "l", xlab="Time", ylab= "Consumption", font.main=1, main="Consumption")
+lines(1:m, conf_upper, col = "red", lty = "dashed")
+lines(1:m, conf_lower, col = "red", lty = "dashed")
+lines(1:m, rep(0,m), col = "blue")
+
+##Price
+#IRF and confidence interval assimilation
+conf_upper <- irf_SVARB$Upper$C[,2]
+conf_lower <- irf_SVARB$Lower$C[,2]
+m <- length(irf_SVARB$Lower$C[,2])
+
+#Plot
+plot(1:m,irf_SVARB$irf$C[,2], ylim = c(min(conf_lower), max(conf_upper)), type = "l", xlab="Time", ylab= "", font.main=1, main="Price")
+lines(1:m, conf_upper, col = "red", lty = "dashed")
+lines(1:m, conf_lower, col = "red", lty = "dashed")
+lines(1:m, rep(0,m), col = "blue", lty = "dotted")
+
+###Price Impulse/Consumption Response
+##Consumption
+#IRF and confidence interval assimilation
+conf_upper <- irf_SVARB$Upper$P[,1]
+conf_lower <- irf_SVARB$Lower$P[,1]
+m <- length(irf_SVARB$Lower$P[,1])
+
+#Plot
+plot(1:m,irf_SVARB$irf$P[,1], ylim = c(min(conf_lower), max(conf_upper)), type = "l", xlab="Time", ylab= "Price")
+lines(1:m, conf_upper, col = "red", lty = "dashed")
+lines(1:m, conf_lower, col = "red", lty = "dashed")
+lines(1:m, rep(0,m), col = "blue", lty = "dotted")
+
+##Price
+#IRF and confidence interval assimilation
+conf_upper <- irf_SVARB$Upper$P[,2]
+conf_lower <- irf_SVARB$Lower$P[,2]
+m <- length(irf_SVARB$Lower$P[,2])
+
+#Plot
+plot(1:m,irf_SVARB$irf$P[,2], ylim = c(min(conf_lower), max(conf_upper)), type = "l", xlab="Time", ylab= "")
+lines(1:m, conf_upper, col = "red", lty = "dashed")
+lines(1:m, conf_lower, col = "red", lty = "dashed")
+lines(1:m, rep(0,m), col = "blue", lty = "dotted")
+```
+
+Forecasting (Without DC)
+```{r}
+m <- 10 
+forecast.SVARB <- predict(VAR.model, n.ahead = (m))
+
+layout( matrix(c(1,2),2,1,byrow = TRUE) )
+##Consumption
+finalC <- C[length(C)]
+fcst_SVARB <- forecast.SVARB$fcst$C[,1]
+conf_upper <- forecast.SVARB$fcst$C[,3]
+conf_lower <- forecast.SVARB$fcst$C[,2]
+#Plots
+plot(1:m, c(fcst_SVARB), ylim = c(min(conf_lower), max(conf_upper)), type = "l", ylab= "")
+lines(1:m, conf_upper, col = "red", lty = "dashed")
+lines(1:m, conf_lower, col = "red", lty = "dashed")
+lines(1:m, rep(0,m), col = "blue", lty = "dotted")
+#lines(conf_lower[1],conf_upper[1], col = "red")
+#lines(c(2,2) , c(conf_upper[1], conf_lower[1]), col = "red", lty = "dashed")
+
+
+##Price
+finalP <- P[length(P)]
+fcst_SVARB <- forecast.SVARB$fcst$P[,1]
+conf_upper <- forecast.SVARB$fcst$P[,3]
+conf_lower <- forecast.SVARB$fcst$P[,2]
+#Plots
+plot(1:m, c(fcst_SVARB), ylim = c(min(conf_lower), max(conf_upper)), type = "l", ylab= "")
+lines(1:m, conf_upper, col = "red", lty = "dashed")
+lines(1:m, conf_lower, col = "red", lty = "dashed")
+lines(1:m, rep(0,m), col = "blue", lty = "dotted")
+#lines(c(2,2) , c(conf_upper[1], conf_lower[1]), col = "red", lty = "dashed")
+
+```
+
+Forecasting (With DC)
+```{r}
+m <- 30 
+i <- 0
+forecast.SVARB <- predict(VAR.model, n.ahead = m)
+Time <- all_data$Consumption$Time
+timeframe <- seq(as.Date("22/11/2019", format = "%d/%m/%Y"),
+             by = "days", length = 40)
+tfxlim <- c(as.Date("22/11/2019", format = "%d/%m/%Y"), as.Date("30/01/2020", format = "%d/%m/%Y"))
+e1 <- timeframe[length(timeframe)] + 1
+
+#layout(matrix(c(1,2),2,1,byrow = TRUE))
+###Consumption
+##Forecast
+C_fcst_SVARB <- forecast.SVARB$fcst$C[,1]
+C_conf_upper <- forecast.SVARB$fcst$C[,3]
+C_conf_lower <- forecast.SVARB$fcst$C[,2]
+##Adding the DC components and seasonal parts!
+#Defining polynomial, added deterministic components etc.
+DC10_C <- data.Decomposition$Consumption[1:30, 6]
+C_Poly <- data.Decomposition$Consumption[1:8, 5]
+C_orig <- data.Decomposition$Consumption[-c(1:100),1]
+C_actual <- all_data$Consumption$DK2[(1827:1926)-i]
+
+
+C_fcst <- polyinvers(c(C[(1717:1726)-i],forecast.SVARB$fcst$C[,1]), C_Poly, 10)[-c(1:10)] + DC10_C
+C_CI_upper <- polyinvers(c(C[(1717:1726)-i],forecast.SVARB$fcst$C[,3]), C_Poly, 10)[-c(1:10)] + DC10_C
+C_CI_lower <- polyinvers(c(C[(1717:1726)-i],forecast.SVARB$fcst$C[,2]), C_Poly, 10)[-c(1:10)] + DC10_C
+
+#Plots
+plot(timeframe, 
+     c(C_orig[1687:1726]), 
+     xlim = tfxlim, 
+     ylim = c(min(c(C_orig[(1637:1726)-i],C_CI_lower)), max(c(C_orig[(1687:1726)-i],C_CI_upper))), 
+     type = "l", 
+     ylab= "kWh", 
+     xlab = "",
+     main = "Consumption Forecast Winter 2019-2020"
+     )
+legend(timeframe[1]-2.75,46130,
+       c("Real Cons.","CI","Forecast"), 
+       lwd=c(1,1,1), 
+       col=c("black","red","black"), 
+       lty = c("solid","dashed","dotted"), 
+       y.intersp= .79
+       )
+lines(c((e1-1):(e1+29)), c(C_orig[1726-i],C_fcst), lty = "dotted")
+lines(c((e1):(e1+29)), C_CI_lower, col = "red", lty = "dashed")
+lines(c((e1):(e1+29)), C_CI_upper, col = "red", lty = "dashed")
+lines(c((e1-1):(e1)), c(C_orig[1726-i], C_CI_upper[1]), lty = "dashed", col = "red")
+lines(c((e1-1):(e1)), c(C_orig[1726-i], C_CI_lower[1]), lty = "dashed", col = "red")
+
+#lines(timeframe, rep(0,40), col = "blue", lty = "dotted")
+
+points(c((e1-1):(e1+29)), c(C_orig[1726], C_actual[1:30]))
+lines(c((e1-1):(e1+29)), c(C_orig[1726], C_actual[1:30]))
+
+###Price
+##Forecast
+P_fcst_SVARB <- forecast.SVARB$fcst$P[,1]
+P_conf_upper <- forecast.SVARB$fcst$P[,3]
+P_conf_lower <- forecast.SVARB$fcst$P[,2]
+##Adding the DC components and seasonal parts!
+#Defining polynomial, added deterministic components etc.
+DC10_P <- data.Decomposition$Price[1:30, 6]
+P_Poly <- data.Decomposition$Price[1:8, 5]
+P_orig <- data.Decomposition$Price[-c(1:100),1]
+P_actual <- all_data$Price$DK2[1827:1926]
+
+P_fcst <- polymult(c(P[1717:1726],forecast.SVARB$fcst$P[,1]), P_Poly, 1)[-c(1:10)] + DC10_P 
+P_CI_upper <- polymult(c(P_orig[1717:1726],forecast.SVARB$fcst$P[,3]), P_Poly, 1)[-c(1:10)] + DC10_P 
+P_CI_lower <- polymult(c(P[1717:1726],forecast.SVARB$fcst$P[,2]), P_Poly, 1)[-c(1:10)] + DC10_P 
+
+#Plots
+plot(timeframe, c(P_orig[1687:1726]), 
+                xlim = tfxlim, 
+                ylim = c(min(c(P_orig[1637:1726],P_CI_lower)),max(c(P_orig[1687:1726],P_CI_upper))), 
+                type = "l", 
+                ylab= "DKK", 
+                xlab = "",
+                main = "Price Forecast Winter 2019-2020"
+     )
+legend(timeframe[1]-2.75,524,c("Real Price","CI","Forecast"), lwd=c(1,1,1), col=c("black","red","black"), lty = c("solid","dashed","dotted"), y.intersp= 0.8)
+lines(c((e1-1):(e1+29)), c(P_orig[1726],P_fcst), lty = "dotted")
+lines(c((e1):(e1+29)), P_CI_lower, col = "red", lty = "dashed")
+lines(c((e1):(e1+29)), P_CI_upper, col = "red", lty = "dashed")
+lines(c((e1-1):(e1)), c(P_orig[1726], P_CI_upper[1]), lty = "dashed", col = "red")
+lines(c((e1-1):(e1)), c(P_orig[1726], P_CI_lower[1]), lty = "dashed", col = "red")
+lines(timeframe, rep(0,40), col = "blue", lty = "dotted")
+
+lines(c((e1-1):(e1+29)), c(P_orig[1726], P_actual[1:30]))
+points(c((e1-1):(e1+29)), c(P_orig[1726], P_actual[1:30]))
+```
+
+Forecast Error Variance Decomposition (Not Included in Project)
+```{r}
+##Manual
+#MSE
+m <- length(Theta)
+MSE <- matrix(c(0,0,0,0), 2,2)
+for (i in 1:m) {
+  MSE <- MSE + Theta[[i]] %*% t(Theta[[i]])
+}
+MSE_C <- MSE[1,1]
+MSE_P <- MSE[2,2]
+
+#FEVD
+omegaC <- 0
+omegaP <- 0
+eC <- c(1,0); eP <- c(0,1)
+for (i in 1:1) {
+  omegaC <- omegaC + ((t(eC) %*% Theta[[i]] %*% eP)^2)[1]/MSE_C
+  omegaP <- omegaP + ((t(eP) %*% Theta[[i]] %*% eC)^2)[1]/MSE_P
+}
+
+
+
+##Automatic
+#VAR
+fevd.VAR <- fevd(VAR.model)
+plot(fevd.VAR)
+#SVARB
+fevd.SVARB <- fevd(SVARB.model, n.ahead = 10)
+plot(fevd.SVARB)
+
+```
+
+
